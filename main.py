@@ -76,7 +76,8 @@ def load_dataset():
         samples=dataset_info['train'],
         data_root=config.DATA_ROOT,
         batch_size=config.BATCH_SIZE//2,
-        shuffle=True
+        shuffle=True,
+        drop_last=True
     )
     
     # 创建目标域数据加载器（val作为目标域）
@@ -84,7 +85,8 @@ def load_dataset():
         samples=dataset_info['val'],
         data_root=config.DATA_ROOT,
         batch_size=config.BATCH_SIZE//2,
-        shuffle=True
+        shuffle=True,
+        drop_last=True
     )
     
     # 创建验证数据加载器（使用val数据）
@@ -173,11 +175,15 @@ def create_mixed_batch(source_batch, target_batch):
     }
 
 
-def train_epoch(model, source_loader, target_loader, optimizer, P, current_epoch):
+def train_epoch(model, source_loader, target_loader, optimizer, P, current_epoch, freeze_backbone_bn=False):
     """
     单个训练周期
     """
     model.train()
+    if freeze_backbone_bn:
+        for module in model.feature_extractor.modules():
+            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                module.eval()
     total_loss = 0.0
     total_class_loss = 0.0
     total_da_loss = 0.0
@@ -210,6 +216,12 @@ def train_epoch(model, source_loader, target_loader, optimizer, P, current_epoch
         p_mixup=getattr(config, "AUG_P_MIXUP", 1.0),
         mixup_alpha=getattr(config, "AUG_MIXUP_ALPHA", 0.4),
     )
+
+    # warmup期间调整损失权重
+    P_run = dict(P)
+    if current_epoch < config.WARMUP_EPOCHS:
+        P_run["lambda_orth"] = 0.0
+        P_run["lambda_indep"] = 0.0
     
     # 创建迭代器
     source_iter = iter(source_loader)
@@ -300,7 +312,7 @@ def train_epoch(model, source_loader, target_loader, optimizer, P, current_epoch
             }
         
         # 计算损失
-        batch_for_loss = compute_batch_loss(batch_for_loss, P)
+        batch_for_loss = compute_batch_loss(batch_for_loss, P_run)
         loss = batch_for_loss['loss_tensor']
         
         # 优化步骤
@@ -449,24 +461,37 @@ def main():
     if torch.cuda.is_available():
         model = model.cuda()
     
-    # 创建优化器
+    # 创建优化器（backbone较小lr，heads较大lr）
+    backbone_params = list(model.feature_extractor.parameters())
+    backbone_param_ids = {id(p) for p in backbone_params}
+    head_params = [p for p in model.parameters() if id(p) not in backbone_param_ids]
+
     optimizer = Adam(
-        model.parameters(),
-        lr=P['learning_rate'],
+        [
+            {"params": backbone_params, "lr": P['learning_rate'] * 0.1},
+            {"params": head_params, "lr": P['learning_rate']},
+        ],
         weight_decay=P['weight_decay']
     )
     
     # 学习率调度器 - Warmup + 余弦退火
     def get_cosine_schedule_with_warmup(optimizer, num_warmup_epochs, num_training_epochs, min_lr=1e-6):
-        def lr_lambda(current_epoch):
-            if current_epoch < num_warmup_epochs:
-                # 线性warmup，与train.py保持一致
-                return float(current_epoch + 1) / float(num_warmup_epochs + 1)
-            else:
-                # 余弦退火阶段，与train.py保持一致
-                import math
-                return 0.5 * (1 + math.cos(math.pi * (current_epoch - num_warmup_epochs) / (num_training_epochs - num_warmup_epochs)))
-        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        base_lrs = [group["lr"] for group in optimizer.param_groups]
+        min_factors = [min_lr / base_lr for base_lr in base_lrs]
+
+        def build_lr_lambda(min_factor):
+            def lr_lambda(epoch):
+                if epoch < num_warmup_epochs:
+                    # 0 -> 1 线性 warmup（无跳变）
+                    return float(epoch + 1) / float(max(1, num_warmup_epochs))
+                # cosine: 1 -> min_factor
+                progress = float(epoch - num_warmup_epochs) / float(max(1, num_training_epochs - num_warmup_epochs))
+                cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+                return min_factor + (1.0 - min_factor) * cosine
+            return lr_lambda
+
+        lr_lambdas = [build_lr_lambda(min_factor) for min_factor in min_factors]
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambdas)
 
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_epochs=config.WARMUP_EPOCHS, num_training_epochs=P['num_epochs'], min_lr=config.MIN_LR)
     
@@ -486,9 +511,18 @@ def main():
     print("开始训练...")
     for epoch in range(P['num_epochs']):
         print(f"Epoch {epoch+1}/{P['num_epochs']}")
-        
+
         # 训练
-        train_loss, train_class_loss, train_da_loss, train_acc = train_epoch(model, source_loader, target_loader, optimizer, P, epoch)
+        freeze_backbone_bn = epoch >= config.WARMUP_EPOCHS
+        train_loss, train_class_loss, train_da_loss, train_acc = train_epoch(
+            model,
+            source_loader,
+            target_loader,
+            optimizer,
+            P,
+            epoch,
+            freeze_backbone_bn=freeze_backbone_bn,
+        )
         train_losses.append(train_loss)
         train_class_losses.append(train_class_loss)
         train_da_losses.append(train_da_loss)

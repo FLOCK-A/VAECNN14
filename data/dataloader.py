@@ -71,7 +71,7 @@ class ASCDataset(Dataset):
         return sample
 
 
-def get_dataloader(samples, data_root=None, batch_size=None, shuffle=True, num_workers=None):
+def get_dataloader(samples, data_root=None, batch_size=None, shuffle=True, num_workers=None, drop_last=False):
     """
     获取数据加载器
     
@@ -91,6 +91,12 @@ def get_dataloader(samples, data_root=None, batch_size=None, shuffle=True, num_w
         num_workers = config.NUM_WORKERS
         
     dataset = ASCDataset(samples, data_root)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        drop_last=drop_last,
+    )
     
     return dataloader

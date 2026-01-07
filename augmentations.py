@@ -118,18 +118,22 @@ class ASCStrongAugment:
         y_soft_full = None
 
         # ---- time rolling (label-preserving) ----
-        if self.p_time_roll > 0 and torch.rand((), device=device) < self.p_time_roll:
+        if self.p_time_roll > 0:
             shifts = torch.randint(low=0, high=T, size=(n_apply,), device=device)
             # per-sample roll (loop is fine; B is not huge in ASC)
             for i in range(n_apply):
+                if torch.rand((), device=device) >= self.p_time_roll:
+                    continue
                 x_btf[i] = torch.roll(x_btf[i], shifts=int(shifts[i].item()), dims=0)
 
         # ---- SpecAugment (masking) ----
-        if self.p_specaug > 0 and torch.rand((), device=device) < self.p_specaug:
+        if self.p_specaug > 0:
             max_f = max(1, int(self.freq_mask_ratio * Freq))
             max_t = max(1, int(self.time_mask_ratio * T))
 
             for i in range(n_apply):
+                if torch.rand((), device=device) >= self.p_specaug:
+                    continue
                 # freq masks
                 for _ in range(self.num_freq_masks):
                     fw = int(torch.randint(0, max_f + 1, (1,), device=device).item())
@@ -147,11 +151,13 @@ class ASCStrongAugment:
                     x_btf[i, t0:t0 + tw, :] = self.mask_value
 
         # ---- FilterAugment (linear) ----
-        if self.p_filter > 0 and torch.rand((), device=device) < self.p_filter:
+        if self.p_filter > 0:
             nmin, nmax = self.filter_n_band
             db_min, db_max = self.filter_db
 
             for i in range(n_apply):
+                if torch.rand((), device=device) >= self.p_filter:
+                    continue
                 n_bound = int(torch.randint(nmin, nmax + 1, (1,), device=device).item())
                 # boundaries on [0, Freq-1]
                 # choose (n_bound-1) internal points, plus endpoints

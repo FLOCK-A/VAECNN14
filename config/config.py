@@ -32,8 +32,8 @@ class Config:
     DATA_ROOT = r'E:\代码\data2\raw'  # 数据根目录
     
     # 其他参数
-    LOG_DIR = 'E:\代码\CNN14VAE\output'
-    MODEL_SAVE_PATH = 'E:\代码\CNN14VAE\output'
+    LOG_DIR = r'E:\代码\CNN14VAE\output'
+    MODEL_SAVE_PATH = r'E:\代码\CNN14VAE\output'
     
     # 预训练权重路径
     PRETRAINED_CHECKPOINT_PATH = r'E:\代码\DANN_audio\Cnn14_16k_mAP=0.438.pth'  # 预训练模型路径
