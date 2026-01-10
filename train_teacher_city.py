@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models.classifier import Cnn14Classifier
 from data.dataloader import get_dataloader, ASCDataset
 from utils.data_validation import validate_no_leakage
+from utils.dataset_io import load_dataset
 
 
 def set_seed(seed):
@@ -51,11 +52,11 @@ def load_and_validate_data(json_path, target_name, source_domain=0):
     Returns:
         train_samples, val_samples (from split=train only)
     """
-    with open(json_path, 'r', encoding='utf-8') as f:
-        dataset = json.load(f)
+    # Use unified dataset loader
+    dataset = load_dataset(json_path)
     
     # Get training samples (split=train only)
-    train_split = dataset.get('train', [])
+    train_split = dataset['train']
     
     # Map target name to domain ID
     target_domain_map = {'b': 1, 'c': 2, 's1': 3, 's2': 4, 's3': 5}

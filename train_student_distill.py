@@ -32,6 +32,7 @@ from data.dataloader import ASCDataset
 from utils.data_validation import validate_no_leakage, verify_cache_exists
 from utils.domain_mask import create_domain_mask
 from losses.kd import compute_student_loss, KDLossConfig
+from utils.dataset_io import load_dataset
 
 
 class AttentionFusionGate(nn.Module):
@@ -180,21 +181,23 @@ def create_dataloaders(json_path, data_root, target_domain, batch_size, val_rati
     Returns:
         train_loader, val_loader, test_loader
     """
-    # Load full dataset
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+    # Use unified dataset loader
+    dataset = load_dataset(json_path)
     
-    # Filter: only split='train' for training/validation
-    # Include source (A, domain=0) and target domain
+    # Get train and test splits
+    train_split = dataset['train']
+    test_split = dataset['test']
+    
+    # Filter: only source (A, domain=0) and target domain for training
     train_samples = [
-        s for s in data
-        if s['split'] == 'train' and s['domain'] in [0, target_domain]
+        s for s in train_split
+        if s['domain'] in [0, target_domain]
     ]
     
-    # Test set: target domain, split='test'
+    # Test set: target domain only
     test_samples = [
-        s for s in data
-        if s['split'] == 'test' and s['domain'] == target_domain
+        s for s in test_split
+        if s['domain'] == target_domain
     ]
     
     # Validate no data leakage

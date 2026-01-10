@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models.classifier import Cnn14Classifier
 from data.dataloader import get_dataloader
 from utils.data_validation import validate_no_leakage, verify_backbone_frozen
+from utils.dataset_io import load_dataset
 
 
 def set_seed(seed):
@@ -49,11 +50,11 @@ def load_and_validate_data(json_path, source_domain=0):
     Returns:
         train_samples, val_samples (from split=train, domain=0 only)
     """
-    with open(json_path, 'r', encoding='utf-8') as f:
-        dataset = json.load(f)
+    # Use unified dataset loader
+    dataset = load_dataset(json_path)
     
     # Get training samples (split=train, domain=0 only)
-    train_split = dataset.get('train', [])
+    train_split = dataset['train']
     source_samples = [s for s in train_split if s.get('domain') == source_domain]
     
     # Validate no data leakage
