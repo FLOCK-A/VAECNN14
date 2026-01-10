@@ -22,10 +22,10 @@ def worker_init_fn(worker_id):
 
 class ASCDataset(Dataset):
     """
-    声学场景分类数据集
+    声学场景分类数据集 - 支持扩展字段用于教师-学生蒸馏框架
     """
 
-    def __init__(self, samples, data_root=None, transform=None):
+    def __init__(self, samples, data_root=None, transform=None, label_key='scene'):
         """
         初始化数据集
         
@@ -33,10 +33,12 @@ class ASCDataset(Dataset):
             samples: 样本列表，包含数据集信息
             data_root: 数据根目录，用于拼接NPY文件路径
             transform: 数据变换
+            label_key: str - 'scene' or 'city', 选择哪个标签字段作为主要监督信号
         """
         self.samples = samples
         self.data_root = data_root
         self.transform = transform
+        self.label_key = label_key  # 'scene' or 'city'
 
     def __len__(self):
         return len(self.samples)
@@ -90,7 +92,15 @@ class ASCDataset(Dataset):
             idx: 样本索引
             
         Returns:
-            sample: 样本数据和标签
+            sample: dict with keys:
+                - features: torch.Tensor - audio features
+                - scene_label: torch.Tensor - scene classification label
+                - city_label: torch.Tensor - city label
+                - domain: torch.Tensor - domain/device ID
+                - split: str - 'train' or 'test'
+                - device_id: str - device identifier
+                - path: str - file path (for cache key)
+                - label: torch.Tensor - main supervision label (scene or city based on label_key)
         """
         sample_info = self.samples[idx]
         
@@ -98,19 +108,36 @@ class ASCDataset(Dataset):
         npy_path = self._maybe_pick_dir_aug(sample_info)
         features = np.load(npy_path)
         
-        # 获取标签和域信息
-        label = sample_info['label']
-        domain = sample_info['domain']
+        # 获取各种标签和元信息（支持旧格式向后兼容）
+        # 如果JSON中只有'label'字段，假设是scene_label
+        scene_label = sample_info.get('scene_label', sample_info.get('label', -1))
+        city_label = sample_info.get('city_label', -1)
+        domain = sample_info.get('domain', 0)
+        split = sample_info.get('split', 'train')  # default to 'train' for backward compatibility
+        device_id = sample_info.get('device_id', f'domain_{domain}')
+        file_path = sample_info.get('file', '')
         
         # 转换为张量
         features = torch.from_numpy(features).float()
-        label = torch.tensor(label, dtype=torch.long)
-        domain = torch.tensor(domain, dtype=torch.long)
+        scene_label_tensor = torch.tensor(scene_label, dtype=torch.long)
+        city_label_tensor = torch.tensor(city_label, dtype=torch.long)
+        domain_tensor = torch.tensor(domain, dtype=torch.long)
+        
+        # 根据label_key选择主要监督标签
+        if self.label_key == 'city':
+            main_label = city_label_tensor
+        else:  # default to 'scene'
+            main_label = scene_label_tensor
         
         sample = {
             'features': features,
-            'label': label,
-            'domain': domain
+            'scene_label': scene_label_tensor,
+            'city_label': city_label_tensor,
+            'domain': domain_tensor,
+            'split': split,
+            'device_id': device_id,
+            'path': file_path,
+            'label': main_label,  # backward compatibility: main supervision label
         }
         
         if self.transform:
@@ -119,7 +146,7 @@ class ASCDataset(Dataset):
         return sample
 
 
-def get_dataloader(samples, data_root=None, batch_size=None, shuffle=True, num_workers=None, worker_init_fn_py=None):
+def get_dataloader(samples, data_root=None, batch_size=None, shuffle=True, num_workers=None, worker_init_fn_py=None, label_key='scene'):
     """
     获取数据加载器
     
@@ -130,6 +157,7 @@ def get_dataloader(samples, data_root=None, batch_size=None, shuffle=True, num_w
         shuffle: 是否打乱数据
         num_workers: 数据加载进程数，默认使用配置文件中的NUM_WORKERS
         worker_init_fn_py: worker初始化函数，用于多进程随机性控制
+        label_key: str - 'scene' or 'city', 选择主要监督标签字段
         
     Returns:
         dataloader: 数据加载器
@@ -141,7 +169,7 @@ def get_dataloader(samples, data_root=None, batch_size=None, shuffle=True, num_w
     if worker_init_fn_py is None:
         worker_init_fn_py = worker_init_fn
         
-    dataset = ASCDataset(samples, data_root)
+    dataset = ASCDataset(samples, data_root, label_key=label_key)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, worker_init_fn=worker_init_fn_py)
     
     return dataloader
