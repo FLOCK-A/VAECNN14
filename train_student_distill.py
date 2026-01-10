@@ -29,7 +29,7 @@ from tqdm import tqdm
 
 from models.classifier import Cnn14Classifier
 from data.dataloader import ASCDataset
-from utils.data_validation import validate_no_leakage
+from utils.data_validation import validate_no_leakage, verify_cache_exists
 from utils.domain_mask import create_domain_mask
 from losses.kd import compute_student_loss, KDLossConfig
 
@@ -99,22 +99,48 @@ class CachedTeacherLogitsLoader:
         
         Returns:
             logits: Tensor [B, num_classes]
+            
+        Raises:
+            KeyError: If cache file not found with detailed path information
         """
         if teacher_mode not in self.cache_index:
             raise ValueError(f"Teacher mode '{teacher_mode}' not found in cache. "
                            f"Available: {list(self.cache_index.keys())}")
         
         logits_list = []
+        missing_files = []
+        
         for file_path in file_paths:
             # Get base filename
             base_name = os.path.basename(file_path)
             
             if base_name not in self.cache_index[teacher_mode]:
-                raise KeyError(f"File '{base_name}' not found in {teacher_mode} cache")
+                missing_files.append(f"  PATH: {file_path} (base: {base_name})")
+                continue
             
             cache_file = self.cache_index[teacher_mode][base_name]
+            
+            if not os.path.exists(cache_file):
+                missing_files.append(f"  PATH: {file_path} -> cache: {cache_file} (NOT FOUND)")
+                continue
+            
             logits = np.load(cache_file)
             logits_list.append(logits)
+        
+        if missing_files:
+            error_msg = f"\n{'='*80}\n"
+            error_msg += f"🚨 CACHE MISSING FOR {len(missing_files)} SAMPLES! 🚨\n"
+            error_msg += f"{'='*80}\n"
+            error_msg += f"Teacher mode: {teacher_mode}\n"
+            error_msg += f"Cache root: {self.cache_root}\n\n"
+            error_msg += "Missing cache files:\n"
+            error_msg += "\n".join(missing_files[:20])
+            if len(missing_files) > 20:
+                error_msg += f"\n... and {len(missing_files) - 20} more\n"
+            error_msg += f"\n{'='*80}\n"
+            error_msg += "⚠️  Please run dump_teacher_logits.py to cache all required samples.\n"
+            error_msg += f"{'='*80}\n"
+            raise KeyError(error_msg)
         
         return torch.from_numpy(np.stack(logits_list, axis=0)).float()
 

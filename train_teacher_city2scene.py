@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models.classifier import Cnn14Classifier
 from data.dataloader import get_dataloader
-from utils.data_validation import validate_no_leakage
+from utils.data_validation import validate_no_leakage, verify_backbone_frozen
 
 
 def set_seed(seed):
@@ -295,10 +295,21 @@ def main():
     print(f"  Total parameters: {scene_params:,}")
     print(f"  Trainable parameters: {scene_trainable:,}")
     
-    print(f"\n✓ Backbone frozen: {city_trainable} trainable params in city_model (should be 0)")
+    # Strict verification that backbone is frozen
+    print("\n" + "="*80)
+    print("Verifying backbone freeze...")
+    print("="*80)
+    try:
+        verify_backbone_frozen(city_model, model_name='City Teacher')
+    except RuntimeError as e:
+        print(str(e))
+        print("\n⚠️  ABORTING: Backbone must be fully frozen for Stage-2 training!")
+        sys.exit(1)
     
     if city_trainable > 0:
-        print("  WARNING: City model has trainable parameters! Backbone may not be fully frozen.")
+        print(f"⚠️  WARNING: City model has {city_trainable} trainable parameters!")
+        print("This may include classifier head params - backbone should still be frozen.")
+
     
     # Optimizer (only for scene head)
     optimizer = torch.optim.Adam(scene_head.parameters(), lr=args.lr, weight_decay=1e-4)
