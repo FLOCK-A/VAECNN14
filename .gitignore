@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Outputs & logs
+output/
+logs/
+runs/
+wandb/
+*.log
+
+# Data (通常不上传；如果你确实要上传 data/，就删掉这一行)
+data/
+
+# OS
+.DS_Store
+Thumbs.db
