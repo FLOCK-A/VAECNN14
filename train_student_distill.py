@@ -257,6 +257,11 @@ def train_epoch(model, train_loader, optimizer, criterion, kd_config, cache_load
     """
     Train for one epoch.
     
+    Experimental Protocol:
+    - CE loss: Computed ONLY on source samples (with scene labels)
+    - KD loss: Computed on target samples (or as configured) WITHOUT using scene labels
+    - Target samples may have scene=-1 (placeholder), never used in CE
+    
     Args:
         model: Student model
         train_loader: Training dataloader
@@ -274,6 +279,8 @@ def train_epoch(model, train_loader, optimizer, criterion, kd_config, cache_load
     Returns:
         avg_loss, avg_acc, stats_dict
     """
+    from losses.kd import kd_loss as kd_loss_fn, compute_kd_weight, compute_confidence_weights
+    
     model.train()
     if fusion_gate is not None:
         fusion_gate.train()
@@ -287,6 +294,8 @@ def train_epoch(model, train_loader, optimizer, criterion, kd_config, cache_load
     coverage_sum = 0
     confidence_sum = 0
     num_batches = 0
+    num_src_total = 0
+    num_tgt_total = 0
     
     pbar = tqdm(train_loader, desc=f"Epoch {epoch} [Train]")
     for batch in pbar:
@@ -302,6 +311,11 @@ def train_epoch(model, train_loader, optimizer, criterion, kd_config, cache_load
         source_mask = source_mask.to(device)
         target_mask = target_mask.to(device)
         
+        num_src = source_mask.sum().item()
+        num_tgt = target_mask.sum().item()
+        num_src_total += num_src
+        num_tgt_total += num_tgt
+        
         # Determine KD mask based on apply_kd_to
         if apply_kd_to == 'target':
             kd_mask = target_mask
@@ -312,17 +326,21 @@ def train_epoch(model, train_loader, optimizer, criterion, kd_config, cache_load
         else:
             raise ValueError(f"Invalid apply_kd_to: {apply_kd_to}")
         
-        # CE loss on source samples only
-        if source_mask.sum() > 0:
+        # ============================================================
+        # CE Loss: ONLY on source samples (protocol enforcement)
+        # ============================================================
+        if num_src > 0:
             ce_loss = criterion(student_logits[source_mask], labels[source_mask])
         else:
-            ce_loss = torch.tensor(0.0).to(device)
+            ce_loss = torch.tensor(0.0, device=device)
         
-        # KD loss
+        # ============================================================
+        # KD Loss: On target samples (or as configured)
+        # Does NOT use scene labels from target samples
+        # ============================================================
         if teacher_mode == 'ce_only':
             # No KD, only CE
-            loss = ce_loss
-            kd_loss_val = 0.0
+            kd_loss_val = torch.tensor(0.0, device=device)
             coverage = 0.0
             avg_confidence = 0.0
         else:
@@ -343,43 +361,75 @@ def train_epoch(model, train_loader, optimizer, criterion, kd_config, cache_load
             else:
                 raise ValueError(f"Unknown teacher_mode: {teacher_mode}")
             
-            # Compute combined loss (CE + KD)
-            combined_loss, stats = compute_student_loss(
-                student_logits,
-                teacher_logits,
-                labels,
-                kd_config,
-                current_epoch=epoch,
-                domain_mask=kd_mask
+            # Compute KD weight based on schedule
+            kd_alpha = compute_kd_weight(
+                epoch,
+                kd_config.warmup_epochs,
+                kd_config.kd_ramp_epochs,
+                kd_config.kd_alpha
             )
             
-            # For source samples, use only CE; for target, use combined
-            # Weight by number of samples in each domain
-            if source_mask.sum() > 0 and target_mask.sum() > 0:
-                # Mixed batch: combine losses appropriately
-                loss = combined_loss  # Already weighted by kd_config
+            # Compute KD loss only if not in warmup
+            if kd_alpha > 0 and kd_mask.sum() > 0:
+                # Compute confidence weights
+                weights, weight_stats = compute_confidence_weights(
+                    teacher_logits,
+                    kd_config.kd_weighting,
+                    kd_config.confidence_threshold
+                )
+                
+                # Apply domain mask to weights
+                weights = weights * kd_mask.float()
+                
+                # Compute KD loss (no scene labels used)
+                kd_loss_val = kd_loss_fn(
+                    student_logits,
+                    teacher_logits,
+                    kd_config.temperature,
+                    kd_config.loss_type,
+                    weights
+                )
+                
+                coverage = (weights > 0).float().mean().item()
+                avg_confidence = weight_stats['avg_confidence']
             else:
-                loss = combined_loss
-            
-            kd_loss_val = stats['kd_loss']
-            coverage = stats['coverage']
-            avg_confidence = stats['avg_confidence']
+                kd_loss_val = torch.tensor(0.0, device=device)
+                coverage = 0.0
+                avg_confidence = 0.0
+        
+        # ============================================================
+        # Combined Loss: CE (source) + KD (target)
+        # ============================================================
+        # Get current KD weight
+        kd_alpha = compute_kd_weight(
+            epoch,
+            kd_config.warmup_epochs,
+            kd_config.kd_ramp_epochs,
+            kd_config.kd_alpha
+        )
+        ce_alpha = 1.0 - kd_alpha
+        
+        # Combine losses
+        loss = ce_alpha * ce_loss + kd_alpha * kd_loss_val
         
         # Backward and optimize
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         
-        # Compute accuracy
-        _, predicted = torch.max(student_logits, 1)
-        correct = (predicted == labels).sum().item()
+        # Compute accuracy (only on source since target may not have valid scene labels)
+        if num_src > 0:
+            _, predicted_src = torch.max(student_logits[source_mask], 1)
+            correct = (predicted_src == labels[source_mask]).sum().item()
+        else:
+            correct = 0
         
         total_loss += loss.item()
         total_correct += correct
-        total_samples += labels.size(0)
+        total_samples += num_src  # Only count source samples for accuracy
         
-        ce_loss_sum += ce_loss.item() if isinstance(ce_loss, torch.Tensor) else ce_loss
-        kd_loss_sum += kd_loss_val
+        ce_loss_sum += ce_loss.item()
+        kd_loss_sum += kd_loss_val.item()
         coverage_sum += coverage
         confidence_sum += avg_confidence
         num_batches += 1
@@ -387,17 +437,25 @@ def train_epoch(model, train_loader, optimizer, criterion, kd_config, cache_load
         # Update progress bar
         pbar.set_postfix({
             'loss': f"{loss.item():.4f}",
-            'acc': f"{100.0 * correct / labels.size(0):.2f}%"
+            'ce': f"{ce_loss.item():.4f}",
+            'kd': f"{kd_loss_val.item():.4f}",
+            'src': num_src,
+            'tgt': num_tgt
         })
     
     avg_loss = total_loss / num_batches
-    avg_acc = 100.0 * total_correct / total_samples
+    avg_acc = 100.0 * total_correct / total_samples if total_samples > 0 else 0.0
+    
+    print(f"\n[Epoch {epoch}] Source samples: {num_src_total}, Target samples: {num_tgt_total}")
+    print(f"[Epoch {epoch}] CE computed on source only, KD computed on {apply_kd_to}")
     
     stats_dict = {
         'ce_loss': ce_loss_sum / num_batches,
         'kd_loss': kd_loss_sum / num_batches,
         'coverage': coverage_sum / num_batches,
-        'avg_confidence': confidence_sum / num_batches
+        'avg_confidence': confidence_sum / num_batches,
+        'num_src_samples': num_src_total,
+        'num_tgt_samples': num_tgt_total
     }
     
     return avg_loss, avg_acc, stats_dict
