@@ -40,7 +40,7 @@ class Cnn14Classifier(nn.Module):
         # 获取特征维度 (假设为2048，需根据实际CNN14输出调整)
         feature_dim = config.FEATURE_DIM
         
-        # 标签分类器
+        # 标签分类器 - 输出 raw logits（不使用 LogSoftmax）
         self.classifier = nn.Sequential(
             nn.Linear(feature_dim, 1024),
             nn.ReLU(),
@@ -48,8 +48,8 @@ class Cnn14Classifier(nn.Module):
             nn.Linear(1024, 1024),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(1024, classes_num),
-            nn.LogSoftmax(dim=1)
+            nn.Linear(1024, classes_num)
+            # 注意：不使用 LogSoftmax，输出 raw logits 供 cross_entropy 使用
         )
         self.use_adapt_head = use_adapt_head and (adapt_dim is not None) and (adapt_dim > 0)
         if self.use_adapt_head:
@@ -64,6 +64,32 @@ class Cnn14Classifier(nn.Module):
         else:
             self.adapt_layer = None
 
+    def forward_features(self, input_data):
+        """
+        提取 backbone 特征（用于 Stage-2 City2Scene Teacher）
+        
+        Args:
+            input_data: 输入数据
+            
+        Returns:
+            features: torch.Tensor - backbone embedding [B, feature_dim]
+        """
+        features = self.feature_extractor(input_data)
+        features = features.view(features.size(0), -1)  # 展平特征
+        return features
+    
+    def extract_features(self, input_data):
+        """
+        提取 backbone 特征的别名方法
+        
+        Args:
+            input_data: 输入数据
+            
+        Returns:
+            features: torch.Tensor - backbone embedding [B, feature_dim]
+        """
+        return self.forward_features(input_data)
+    
     def forward(self, input_data, return_adapt_features=False):
         """
         前向传播
@@ -73,15 +99,16 @@ class Cnn14Classifier(nn.Module):
             return_adapt_features: 是否返回用于域适应的特征
 
         Returns:
-            如果return_adapt_features=False: 分类结果
-            如果return_adapt_features=True: (分类结果, 用于域适应的特征)
+            如果return_adapt_features=False: raw logits [B, classes_num]
+            如果return_adapt_features=True: (raw logits, 用于域适应的特征)
+            
+        注意：输出为 raw logits，不包含 LogSoftmax，可直接用于 cross_entropy
         """
         # 提取特征
-        features = self.feature_extractor(input_data)
-        features = features.view(features.size(0), -1)  # 展平特征
+        features = self.forward_features(input_data)
         features = self.dropout(features)
         
-        # 分类器输出
+        # 分类器输出 raw logits
         output = self.classifier(features)
         
         if return_adapt_features:
