@@ -1,0 +1,48 @@
+{
+  "train": [
+    {
+      "file": "audio_00001.npy",
+      "scene_label": 0,
+      "city_label": 0,
+      "domain": 0,
+      "device_id": "A",
+      "split": "train"
+    },
+    {
+      "file": "audio_00002.npy",
+      "scene_label": 1,
+      "city_label": 1,
+      "domain": 0,
+      "device_id": "A",
+      "split": "train"
+    }
+  ],
+  "val": [
+    {
+      "file": "audio_00003.npy",
+      "scene_label": 2,
+      "city_label": 2,
+      "domain": 1,
+      "device_id": "b",
+      "split": "test"
+    },
+    {
+      "file": "audio_00004.npy",
+      "scene_label": 0,
+      "city_label": 0,
+      "domain": 1,
+      "device_id": "b",
+      "split": "test"
+    }
+  ],
+  "test": [
+    {
+      "file": "audio_00005.npy",
+      "scene_label": 1,
+      "city_label": 1,
+      "domain": 1,
+      "device_id": "b",
+      "split": "test"
+    }
+  ]
+}
